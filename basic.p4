@@ -7,6 +7,8 @@ typedef bit<10> PortId_t;
 const PortId_t NUM_PORTS = 512;
 #define PACKET_COUNT_WIDTH 32
 #define TRESHOLD 200
+//microseconds
+#define WINDOW 15000000
 #define BYTE_COUNT_WIDTH 48
 //#define PACKET_BYTE_COUNT_WIDTH (PACKET_COUNT_WIDTH + BYTE_COUNT_WIDTH)
 #define PACKET_BYTE_COUNT_WIDTH 80
@@ -130,7 +132,7 @@ control MyIngress(inout headers hdr,
     }
     direct_counter(CounterType.packets) c;
     register<bit<48>>(1024) last_seen;
-    register<bit<64>>(1024) flows;
+    register<bit<48>>(1024) window;
 
     action get_inter_packet_gap(out bit<48> interval,bit<32> flow_id)
     {
@@ -143,10 +145,14 @@ control MyIngress(inout headers hdr,
       last_seen.write((bit<32>)flow_id,
       interval);
     }
-    action compute_flow_id () {
-      meta.ingress_metadata.my_flowID[31:0]=hdr.ipv4.srcAddr;
-      meta.ingress_metadata.my_flowID[63:32]=hdr.ipv4.dstAddr;
+
+    action restore_flow(bit<32> flow,bit<32> flow_opp)
+    {
+
+      last_seen.write((bit<32>)flow,0);
+      last_seen.write((bit<32>)flow_opp,0);
     }
+   
     action compute_reg_index () {
       // Each flow ID is hashed into d=3 different locations
         hash(meta.ingress_metadata.hashed_flow, HashAlgorithm.crc16, HASH_BASE,
@@ -156,12 +162,6 @@ control MyIngress(inout headers hdr,
       }
     
     action ipv4_forward(macAddr_t dstAddr, egressSpec_t port) {
-        standard_metadata.egress_spec = port;
-        hdr.ethernet.srcAddr = hdr.ethernet.dstAddr;
-        hdr.ethernet.dstAddr = dstAddr;
-        hdr.ipv4.ttl = hdr.ipv4.ttl - 1;
-    }
-    action update_origin(macAddr_t dstAddr, egressSpec_t port) {
         standard_metadata.egress_spec = port;
         hdr.ethernet.srcAddr = hdr.ethernet.dstAddr;
         hdr.ethernet.dstAddr = dstAddr;
@@ -186,19 +186,43 @@ control MyIngress(inout headers hdr,
         if (hdr.ipv4.isValid()) {
             ipv4_lpm.apply();
             bit<48> tmp;
+	    bit<48> time;
             bit<32> flow;
             bit<32> flow_opp;
             compute_reg_index();
             bit<48> last_pkt_cnt;
             bit<48> last_pkt_cnt_opp;
+	
+	    bit<48> last_time;
+	    bit<48> intertime; 
             /* Get the time the previous packet was seen */
             flow = meta.ingress_metadata.hashed_flow;
             flow_opp = meta.ingress_metadata.hashed_flow_opposite;
+	
+	    window.read(last_time,flow);
+
+	    // first time initialize 
+	    if(last_time == (bit<48>)0){
+	    	window.write((bit<32>)flow,standard_metadata.ingress_global_timestamp);
+	    }	
+
+
+	    //window.write((bit<32>)flow_opp,standard_metadata.ingress_global_timestamp);
+	    intertime = standard_metadata.ingress_global_timestamp - last_time;
+            window.write((bit<32>)flow,standard_metadata.ingress_global_timestamp);
+	    // check window
+	    if(intertime > WINDOW){
+		restore_flow(flow,flow_opp);
+	    }
+	    else{
+		
+	    }
+
             last_seen.read(last_pkt_cnt,flow);
             last_seen.read(last_pkt_cnt_opp,flow_opp);
             tmp = last_pkt_cnt - last_pkt_cnt_opp + 1;
-            if(tmp < TRESHOLD) {
 
+            if(tmp < TRESHOLD) {
               get_inter_packet_gap(last_pkt_cnt,flow);
             }
             else{
