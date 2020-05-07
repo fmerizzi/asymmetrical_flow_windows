@@ -8,7 +8,7 @@ const PortId_t NUM_PORTS = 512;
 #define PACKET_COUNT_WIDTH 32
 #define TRESHOLD 200
 //microseconds
-#define BASIC_WINDOW 15000000
+#define WINDOW 15000000
 #define BYTE_COUNT_WIDTH 48
 //#define PACKET_BYTE_COUNT_WIDTH (PACKET_COUNT_WIDTH + BYTE_COUNT_WIDTH)
 #define PACKET_BYTE_COUNT_WIDTH 80
@@ -32,10 +32,22 @@ typedef bit<32> ip4Addr_t;
 
 struct ingress_metadata_t {
 
-    bit<48> window;
+    bit<64> my_flowID;
+    bit<64> my_estimated_count;
+    bit<1> already_matched;
+    bit<32> nhop_ipv4;
+    bit<64> carry_min;
+    bit<64> carry_min_plus_one;
+    bit<8> min_stage;
+    bit<1> do_recirculate;
+    bit<9> orig_egr_port;
+
     bit<32> hashed_flow;
     bit<32> hashed_flow_opposite;
+    bit<32> hashed_address_s3;
 
+    bit<64> random_bits;
+    bit<12> random_bits_short;
 }
 
 header ethernet_t {
@@ -180,43 +192,27 @@ control MyIngress(inout headers hdr,
             compute_reg_index();
             bit<48> last_pkt_cnt;
             bit<48> last_pkt_cnt_opp;
-
-	    bit<3> random_bits;
+	
 	    bit<48> last_time;
 	    bit<48> intertime; 
             /* Get the time the previous packet was seen */
-	    meta.ingress_metadata.window = BASIC_WINDOW;
-
             flow = meta.ingress_metadata.hashed_flow;
             flow_opp = meta.ingress_metadata.hashed_flow_opposite;
 	
 	    window.read(last_time,flow);
 
-	   
-	    //test = standard_metadata.ingress_global_timestamp[2:0];
 	    // first time initialize 
 	    if(last_time == (bit<48>)0){
 	    	window.write((bit<32>)flow,standard_metadata.ingress_global_timestamp);
 	    }	
 
-		//testing purpose
-	    //window.write((bit<32>)flow_opp,standard_metadata.ingress_global_timestamp);
-	    //window.write((bit<32>)flow +3,meta.ingress_metadata.window) ;
 
+	    //window.write((bit<32>)flow_opp,standard_metadata.ingress_global_timestamp);
 	    intertime = standard_metadata.ingress_global_timestamp - last_time;
             window.write((bit<32>)flow,standard_metadata.ingress_global_timestamp);
 	    // check window
-	 
-
-	    if(intertime > meta.ingress_metadata.window){
+	    if(intertime > WINDOW){
 		restore_flow(flow,flow_opp);
-		//generate new window
-		random_bits = standard_metadata.ingress_global_timestamp[2:0];
-		meta.ingress_metadata.window = ((bit<48>) random_bits + 1) * BASIC_WINDOW; 
-
-		//TESTING PURPOSE tool for visualizing dinamic window size 
-	        window.write((bit<32>)flow +1, meta.ingress_metadata.window);
-		window.write((bit<32>)flow +2, (bit<48>)random_bits);
 	    }
 	    else{
 		
