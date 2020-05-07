@@ -1,0 +1,126 @@
+#include <core.p4>
+#include <v1model.p4>
+
+#include "also/header.p4"
+#include "also/parser.p4"
+
+control egress(inout headers hdr, inout metadata meta, inout standard_metadata_t standard_metadata) {
+    action rewrite_mac(bit<48> smac) {
+        hdr.ethernet.srcAddr = smac;
+    }
+    action _drop() {
+        mark_to_drop();
+    }
+    table send_frame {
+        actions = {
+            rewrite_mac;
+            _drop;
+            NoAction;
+        }
+        key = {
+            standard_metadata.egress_port: exact;
+        }
+        size = 256;
+        default_action = NoAction();
+    }
+    apply {
+        if (hdr.ipv4.isValid()) {
+          send_frame.apply();
+        }
+    }
+}
+
+control ingress(inout headers hdr, inout metadata meta, inout standard_metadata_t standard_metadata) {
+    direct_counter(CounterType.packets) c;
+    register<bit<48>>(1024) last_seen;
+    register<bit<64>>(1024) flows;
+    action _drop() {
+        mark_to_drop();
+    }
+    action get_inter_packet_gap(out bit<48> interval,bit<32> flow_id)
+    {
+      bit<48> last_pkt_cnt;
+      bit<32> index;
+      /* Get the time the previous packet was seen */
+      last_seen.read(last_pkt_cnt,flow_id);
+      interval = last_pkt_cnt + 1;
+      /* Update the register with the new timestamp */
+      last_seen.write((bit<32>)flow_id,
+      interval);
+    }
+    action compute_flow_id () {
+      meta.ingress_metadata.my_flowID[31:0]=hdr.ipv4.srcAddr;
+      meta.ingress_metadata.my_flowID[63:32]=hdr.ipv4.dstAddr;
+    }
+    action compute_reg_index () {
+      // Each flow ID is hashed into d=3 different locations
+        hash(meta.ingress_metadata.hashed_flow, HashAlgorithm.crc16, HASH_BASE,
+            {hdr.ipv4.srcAddr, 7w11, hdr.ipv4.dstAddr}, HASH_MAX);
+        hash(meta.ingress_metadata.hashed_flow_opposite, HashAlgorithm.crc16, HASH_BASE,
+            {hdr.ipv4.dstAddr, 7w11, hdr.ipv4.srcAddr}, HASH_MAX);
+      }
+
+    action set_nhop(bit<32> nhop_ipv4, bit<9> port) {
+        meta.ingress_metadata.nhop_ipv4 = nhop_ipv4;
+        standard_metadata.egress_spec = port;
+        hdr.ipv4.ttl = hdr.ipv4.ttl + 8w255;
+    }
+    action set_dmac(bit<48> dmac) {
+        hdr.ethernet.dstAddr = dmac;
+    }
+    table ipv4_lpm {
+        actions = {
+            _drop;
+            set_nhop;
+            NoAction;
+        }
+        key = {
+            hdr.ipv4.dstAddr: lpm;
+        }
+        size = 1024;
+        default_action = NoAction();
+    }
+    table forward {
+        actions = {
+            set_dmac;
+            _drop;
+            NoAction;
+        }
+        counters = c;
+        key = {
+            meta.ingress_metadata.nhop_ipv4: exact;
+        }
+        size = 512;
+        default_action = NoAction();
+    }
+
+    apply {
+
+          if (hdr.ipv4.isValid() ) {
+            ipv4_lpm.apply();
+            forward.apply();
+            bit<48> tmp;
+            bit<32> flow;
+            bit<32> flow_opp;
+            compute_reg_index();
+            bit<48> last_pkt_cnt;
+            bit<48> last_pkt_cnt_opp;
+            /* Get the time the previous packet was seen */
+            flow = meta.ingress_metadata.hashed_flow;
+            flow_opp = meta.ingress_metadata.hashed_flow_opposite;
+            last_seen.read(last_pkt_cnt,flow);
+            last_seen.read(last_pkt_cnt_opp,flow_opp);
+            tmp = last_pkt_cnt - last_pkt_cnt_opp + 1;
+            if(tmp < TRESHOLD) {
+
+              get_inter_packet_gap(last_pkt_cnt,flow);
+            }
+            else{
+            _drop();
+
+            }
+        }
+    }
+}
+
+V1Switch(ParserImpl(), verifyChecksum(), ingress(), egress(), computeChecksum(), DeparserImpl()) main;
