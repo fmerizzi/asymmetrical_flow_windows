@@ -32,7 +32,6 @@ typedef bit<32> ip4Addr_t;
 
 struct ingress_metadata_t {
 
-    bit<48> window;
     bit<32> hashed_flow;
     bit<32> hashed_flow_opposite;
 
@@ -121,6 +120,7 @@ control MyIngress(inout headers hdr,
     direct_counter(CounterType.packets) c;
     register<bit<48>>(1024) last_seen;
     register<bit<48>>(1024) window;
+    register<bit<48>>(1) window_size; 
 
     action get_inter_packet_gap(out bit<48> interval,bit<32> flow_id)
     {
@@ -184,38 +184,47 @@ control MyIngress(inout headers hdr,
 	    bit<3> random_bits;
 	    bit<48> last_time;
 	    bit<48> intertime; 
-            /* Get the time the previous packet was seen */
-	    meta.ingress_metadata.window = BASIC_WINDOW;
+	    bit<48> us_window;
+
 
             flow = meta.ingress_metadata.hashed_flow;
             flow_opp = meta.ingress_metadata.hashed_flow_opposite;
 	
+	    // read the time the last package was seen on this route 
 	    window.read(last_time,flow);
+	    // read current window size 
+	    window_size.read(us_window,0);
+		
 
-	   
-	    //test = standard_metadata.ingress_global_timestamp[2:0];
-	    // first time initialize 
+	    // first time initialize  window size and timestamp 
 	    if(last_time == (bit<48>)0){
 	    	window.write((bit<32>)flow,standard_metadata.ingress_global_timestamp);
+	    }	
+	    if(us_window == (bit<48>)0){
+	    	window_size.write(0,15000000);
+		us_window = 15000000;
 	    }	
 
 		//testing purpose
 	    //window.write((bit<32>)flow_opp,standard_metadata.ingress_global_timestamp);
 	    //window.write((bit<32>)flow +3,meta.ingress_metadata.window) ;
-
+	
+	    // calc time between last package and current one 
 	    intertime = standard_metadata.ingress_global_timestamp - last_time;
+	    // write current package time in register, rewrite old time 
             window.write((bit<32>)flow,standard_metadata.ingress_global_timestamp);
-	    // check window
 	 
-
-	    if(intertime > meta.ingress_metadata.window){
+	    // check is intertime is greater than current window 
+	    if(intertime > us_window){
+		// if so restore asymmetric flow counters 
 		restore_flow(flow,flow_opp);
-		//generate new window
+		//also generate new window size
 		random_bits = standard_metadata.ingress_global_timestamp[2:0];
-		meta.ingress_metadata.window = ((bit<48>) random_bits + 1) * BASIC_WINDOW; 
-
-		//TESTING PURPOSE tool for visualizing dinamic window size 
-	        window.write((bit<32>)flow +1, meta.ingress_metadata.window);
+		us_window = ((bit<48>) random_bits + 1) * BASIC_WINDOW; 
+		//write new window to register for scope management
+		window_size.write(0,us_window);
+		// testing purposes 
+		window.write((bit<32>)flow +1, (bit<48>)us_window);
 		window.write((bit<32>)flow +2, (bit<48>)random_bits);
 	    }
 	    else{
