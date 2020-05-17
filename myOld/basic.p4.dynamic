@@ -8,7 +8,7 @@ const PortId_t NUM_PORTS = 512;
 #define PACKET_COUNT_WIDTH 32
 #define TRESHOLD 200
 //microseconds
-#define WINDOW 15000000
+#define BASIC_WINDOW 15000000
 #define BYTE_COUNT_WIDTH 48
 //#define PACKET_BYTE_COUNT_WIDTH (PACKET_COUNT_WIDTH + BYTE_COUNT_WIDTH)
 #define PACKET_BYTE_COUNT_WIDTH 80
@@ -32,22 +32,9 @@ typedef bit<32> ip4Addr_t;
 
 struct ingress_metadata_t {
 
-    bit<64> my_flowID;
-    bit<64> my_estimated_count;
-    bit<1> already_matched;
-    bit<32> nhop_ipv4;
-    bit<64> carry_min;
-    bit<64> carry_min_plus_one;
-    bit<8> min_stage;
-    bit<1> do_recirculate;
-    bit<9> orig_egr_port;
-
     bit<32> hashed_flow;
     bit<32> hashed_flow_opposite;
-    bit<32> hashed_address_s3;
 
-    bit<64> random_bits;
-    bit<12> random_bits_short;
 }
 
 header ethernet_t {
@@ -133,7 +120,7 @@ control MyIngress(inout headers hdr,
     direct_counter(CounterType.packets) c;
     register<bit<48>>(1024) last_seen;
     register<bit<48>>(1024) window;
-    register<bit<16>>(1024) treshold;
+    register<bit<48>>(1) window_size; 
 
     action get_inter_packet_gap(out bit<48> interval,bit<32> flow_id)
     {
@@ -193,55 +180,66 @@ control MyIngress(inout headers hdr,
             compute_reg_index();
             bit<48> last_pkt_cnt;
             bit<48> last_pkt_cnt_opp;
-	
+
+	    bit<3> random_bits;
 	    bit<48> last_time;
-	    bit<48> intertime;
+	    bit<48> intertime; 
+	    bit<48> us_window;
 
-	    bit<16> currentTreshold;
 
-            /* Get the time the previous packet was seen */
             flow = meta.ingress_metadata.hashed_flow;
             flow_opp = meta.ingress_metadata.hashed_flow_opposite;
 	
+	    // read the time the last package was seen on this route 
 	    window.read(last_time,flow);
-	    treshold.read(currentTreshold,flow);
+	    // read current window size 
+	    window_size.read(us_window,0);
+		
 
-	    // first time initialize 
+	    // first time initialize  window size and timestamp 
 	    if(last_time == (bit<48>)0){
 	    	window.write((bit<32>)flow,standard_metadata.ingress_global_timestamp);
-		last_time = standard_metadata.ingress_global_timestamp;
 	    }	
-	    if(currentTreshold == (bit<16>)0){
-		treshold.write(flow,(bit<16>)200);
-		currentTreshold = 200;
-	    }
-	    
+	    if(us_window == (bit<48>)0){
+	    	window_size.write(0,15000000);
+		us_window = 15000000;
+	    }	
 
-
+		//testing purpose
 	    //window.write((bit<32>)flow_opp,standard_metadata.ingress_global_timestamp);
+	    //window.write((bit<32>)flow +3,meta.ingress_metadata.window) ;
+	
+	    // calc time between last package and current one 
 	    intertime = standard_metadata.ingress_global_timestamp - last_time;
+	    // write current package time in register, rewrite old time 
             window.write((bit<32>)flow,standard_metadata.ingress_global_timestamp);
-	    // check window
-	    if(intertime > WINDOW){
+	 
+	    // check is intertime is greater than current window 
+	    if(intertime > us_window){
+		// if so restore asymmetric flow counters 
 		restore_flow(flow,flow_opp);
+		//also generate new window size
+		random_bits = standard_metadata.ingress_global_timestamp[2:0];
+		us_window = ((bit<48>) random_bits + 1) * BASIC_WINDOW; 
+		//write new window to register for scope management
+		window_size.write(0,us_window);
+		// testing purposes 
+		window.write((bit<32>)flow +1, (bit<48>)us_window);
+		window.write((bit<32>)flow +2, (bit<48>)random_bits);
+	    }
+	    else{
+		
 	    }
 
             last_seen.read(last_pkt_cnt,flow);
             last_seen.read(last_pkt_cnt_opp,flow_opp);
             tmp = last_pkt_cnt - last_pkt_cnt_opp + 1;
 
-            if(tmp < 200) {
+            if(tmp < TRESHOLD) {
               get_inter_packet_gap(last_pkt_cnt,flow);
             }
             else{
-	      // treshold is reached 
-	      treshold.write(flow,currentTreshold+100);
-	      // increase your treshold, restore the flow 
-              restore_flow(flow,flow_opp);
-	      // after a while i drop you
-	      if(currentTreshold > 2000){
-		drop();
-	      }
+              drop();
             }
         }
     }
