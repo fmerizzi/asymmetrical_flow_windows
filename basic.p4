@@ -230,18 +230,25 @@ control MyIngress(inout headers hdr,
             last_seen.read(last_pkt_cnt_opp,flow_opp);
             tmp = last_pkt_cnt - last_pkt_cnt_opp + 1;
 
-            if(tmp < 200) {
+            if(tmp < (bit<48>)currentTreshold) {
               get_inter_packet_gap(last_pkt_cnt,flow);
             }
             else{
-	      // treshold is reached 
-	      treshold.write(flow,currentTreshold+100);
-	      // increase your treshold, restore the flow 
-              restore_flow(flow,flow_opp);
-	      // after a while i drop you
-	      if(currentTreshold > 2000){
+	      // treshold is reached
+
+	      // if you reach the max tresh, i drop you
+	      // (send message to controller)  
+	      if(currentTreshold > 1000){
 		drop();
 	      }
+	      // else i raise your treshold, and restore the flow 
+	      else {
+	      	treshold.write(flow,currentTreshold+200);
+	      	// increase your treshold, restore the flow 
+              	restore_flow(flow,flow_opp);
+	      	// after a while i drop you
+	      }	     
+
             }
         }
     }
